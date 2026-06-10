@@ -1,0 +1,7 @@
+arcgis
+fastmcp
+python-dotenv
+fastapi
+uvicorn[standard]
+PyJWT[cryptography]
+starlette
