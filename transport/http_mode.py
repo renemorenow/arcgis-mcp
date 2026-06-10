@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import inspect
-import json
 import sys
-import traceback
-from typing import Any
 
 # Importar todas las funciones de tools (necesario para el dict TOOLS)
 from tools.discovery import (
@@ -57,7 +54,7 @@ from tools.server import (
     server_logs_query, server_logs_clean,
     server_machines_list, server_machine_hardware,
     server_service_manifest, server_services_directory_list,
-    server_services_folders,
+    server_services_folders, server_ping_all, server_services_health_all, image_server_services_list,
 )
 from tools.maps import (
     webmap_get, webmap_layers, webmap_add_layer,
@@ -220,6 +217,9 @@ def run_http_server():
         "server_service_manifest": server_service_manifest,
         "server_services_directory_list": server_services_directory_list,
         "server_services_folders": server_services_folders,
+        "server_ping_all": server_ping_all,
+        "server_services_health_all": server_services_health_all,
+        "image_server_services_list": image_server_services_list,
         # Web Maps
         "webmap_get": webmap_get,
         "webmap_layers": webmap_layers,

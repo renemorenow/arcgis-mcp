@@ -1,22 +1,12 @@
 from __future__ import annotations
+from typing import Any
 
-import inspect
-import json
-import sys
-import traceback
-from typing import Any, Optional
-
-from arcgis.features import FeatureLayer, FeatureLayerCollection, FeatureSet
-from arcgis.features import FeatureCollection
-from arcgis.geoprocessing import import_toolbox
-from arcgis.mapping import MapImageLayer
-from arcgis import geocoding as arcgis_geocoding
-from arcgis.geometry import functions as geom_functions
+from arcgis.gis import GIS
+import concurrent.futures
 
 from _server import mcp
 from _auth import (
-    get_gis, detect_platform, WRITE_ENABLED,
-    _require_write, _require_enterprise, _resolve_layer, _safe_result,
+    get_gis, _require_write, _require_enterprise, _safe_result,
 )
 
 # =========================================================================== #
@@ -437,3 +427,277 @@ def server_services_folders(server_role: str = "HOSTING_SERVER") -> list:
     return list(server.content.folders or [])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Hace GET autenticado a cada servicio REST y reporta si responde OK o no.
+# Cubre TODOS los servidores federados (arcgis, image, etc.)
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def server_ping_all(gis: GIS, folder: str = "", parallel: bool = True) -> list[dict]:
+    """
+    Verifica el estado REST de cada servicio en todos los servidores federados.
+
+    Parámetros
+    ----------
+    gis     : GIS — sesión activa
+    folder  : str — filtrar por carpeta (vacío = todas)
+    parallel: bool — usar ThreadPoolExecutor para velocidad (default True)
+
+    Retorna
+    -------
+    Lista de dicts con: server_role, server_url, folder, service_name,
+                        service_type, rest_url, status, raster_count,
+                        layer_count, error
+    """
+
+    def _ping_service(svc_info: dict) -> dict:
+        """Hace GET al endpoint REST del servicio y retorna su estado."""
+        rest_url = svc_info["rest_url"]
+        try:
+            resp = gis._con.get(rest_url, {"f": "json"})
+
+            if "error" in resp:
+                return {**svc_info,
+                        "status"      : "ERROR",
+                        "raster_count": None,
+                        "layer_count" : None,
+                        "error"       : resp["error"].get("message", str(resp["error"]))}
+
+            return {**svc_info,
+                    "status"      : "OK",
+                    "raster_count": resp.get("rasterCount"),
+                    "layer_count" : resp.get("layerCount") or resp.get("numLayers"),
+                    "error"       : None}
+
+        except Exception as e:
+            return {**svc_info,
+                    "status"      : "UNREACHABLE",
+                    "raster_count": None,
+                    "layer_count" : None,
+                    "error"       : str(e)}
+
+    # ── Recopilar todos los servicios de todos los servidores ────────────────
+    all_services: list[dict] = []
+
+    for server in gis.admin.servers.list():
+        role       = getattr(server, "serverRole", "UNKNOWN")
+        server_url = server.url.replace("/admin", "").replace("/rest/services", "")
+
+        try:
+            folders_to_scan = server.services.folders
+        except Exception:
+            continue
+
+        if folder:
+            folders_to_scan = [f for f in folders_to_scan if f.lower() == folder.lower()]
+
+        for fld in folders_to_scan:
+            if fld in ("System", "Utilities"):
+                continue
+            try:
+                services = server.services.list(folder=fld)
+            except Exception:
+                continue
+
+            for svc in services:
+                svc_name = svc.properties.get("serviceName") or svc.properties.get("name", "")
+                svc_type = svc.properties.get("type", "")
+                fld_name = svc.properties.get("folderName", fld).lstrip("/")
+
+                # Construir URL REST según tipo
+                type_suffix = {
+                    "MapServer"    : "MapServer",
+                    "ImageServer"  : "ImageServer",
+                    "FeatureServer": "FeatureServer",
+                    "GPServer"     : "GPServer",
+                    "GeocodeServer": "GeocodeServer",
+                }.get(svc_type, svc_type)
+
+                rest_url = (
+                    f"{server_url}/rest/services/"
+                    f"{fld_name + '/' if fld_name and fld_name != '/' else ''}"
+                    f"{svc_name}/{type_suffix}"
+                )
+
+                all_services.append({
+                    "server_role" : role,
+                    "server_url"  : server_url,
+                    "folder"      : fld_name or "/",
+                    "service_name": svc_name,
+                    "service_type": svc_type,
+                    "rest_url"    : rest_url,
+                })
+
+    # ── Ping en paralelo o secuencial ────────────────────────────────────────
+    if parallel and all_services:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(_ping_service, all_services))
+    else:
+        results = [_ping_service(s) for s in all_services]
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Como admin_services_health pero para TODOS los servidores federados.
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def server_services_health_all(gis: GIS) -> dict:
+    """
+    Retorna el estado admin (STARTED/STOPPED) de cada servicio
+    en todos los servidores federados.
+
+    Retorna
+    -------
+    Dict con:
+      - servers    : lista de {role, url, services: [{name, folder, type, configured, realtime}]}
+      - stopped    : lista de servicios detenidos
+      - total      : conteo total
+      - ok_count   : conteo STARTED
+      - error_count: conteo STOPPED/ERROR
+    """
+    all_results  = []
+    stopped      = []
+
+    for server in gis.admin.servers.list():
+        role       = getattr(server, "serverRole", "UNKNOWN")
+        server_url = server.url
+
+        server_entry = {"role": role, "url": server_url, "services": []}
+
+        try:
+            folders = server.services.folders
+        except Exception:
+            continue
+
+        for fld in folders:
+            if fld in ("System", "Utilities"):
+                continue
+            try:
+                services = server.services.list(folder=fld)
+            except Exception:
+                continue
+
+            for svc in services:
+                try:
+                    status   = svc.status
+                    cfg      = status.get("configuredState", "UNKNOWN")
+                    realtime = status.get("realTimeState",   "UNKNOWN")
+                    name     = svc.properties.get("serviceName", "")
+                    svc_type = svc.properties.get("type", "")
+                    fld_name = svc.properties.get("folderName", fld).lstrip("/")
+
+                    entry = {
+                        "name"      : name,
+                        "folder"    : fld_name or "/",
+                        "type"      : svc_type,
+                        "configured": cfg,
+                        "realtime"  : realtime,
+                    }
+                    server_entry["services"].append(entry)
+
+                    if realtime != "STARTED":
+                        stopped.append({
+                            "server_role": role,
+                            "server_url" : server_url,
+                            **entry,
+                        })
+
+                except Exception:
+                    pass
+
+        all_results.append(server_entry)
+
+    total     = sum(len(s["services"]) for s in all_results)
+    ok_count  = total - len(stopped)
+
+    return {
+        "servers"    : all_results,
+        "stopped"    : stopped,
+        "total"      : total,
+        "ok_count"   : ok_count,
+        "error_count": len(stopped),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lista servicios del Image Server por carpeta usando gis.admin.servers.get()
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def image_server_services_list(gis: GIS, folder: str = "") -> list[dict]:
+    """
+    Lista servicios publicados en el Image Server federado.
+
+    Parámetros
+    ----------
+    gis   : GIS — sesión activa
+    folder: str — carpeta a listar (vacío = todas)
+
+    Retorna
+    -------
+    Lista de dicts con: folder, name, type, status, rest_url
+    """
+    results = []
+
+    # Buscar el servidor con rol IMAGE_SERVER entre los federados
+    image_server = None
+    for server in gis.admin.servers.list():
+        role = getattr(server, "serverRole", "")
+        if "IMAGE" in role.upper():
+            image_server = server
+            break
+
+    if image_server is None:
+        # Fallback: buscar por URL que contenga /image/
+        for server in gis.admin.servers.list():
+            if "/image/" in server.url.lower() or "image" in server.url.lower():
+                image_server = server
+                break
+
+    if image_server is None:
+        return [{"error": "No se encontró un Image Server federado"}]
+
+    server_base = image_server.url.replace("/admin", "")
+    folders_to_scan = [folder] if folder else image_server.services.folders
+
+    for fld in folders_to_scan:
+        if fld in ("System", "Utilities"):
+            continue
+        try:
+            services = image_server.services.list(folder=fld)
+        except Exception as e:
+            results.append({"folder": fld, "error": str(e)})
+            continue
+
+        for svc in services:
+            name     = svc.properties.get("serviceName", "")
+            svc_type = svc.properties.get("type", "")
+            fld_name = svc.properties.get("folderName", fld).lstrip("/")
+
+            try:
+                status   = svc.status
+                cfg      = status.get("configuredState", "UNKNOWN")
+                realtime = status.get("realTimeState",   "UNKNOWN")
+            except Exception:
+                cfg = realtime = "UNKNOWN"
+
+            type_suffix = {
+                "ImageServer": "ImageServer",
+                "MapServer"  : "MapServer",
+            }.get(svc_type, svc_type)
+
+            rest_url = (
+                f"{server_base}/rest/services/"
+                f"{fld_name + '/' if fld_name else ''}"
+                f"{name}/{type_suffix}"
+            )
+
+            results.append({
+                "folder"    : fld_name or "/",
+                "name"      : name,
+                "type"      : svc_type,
+                "configured": cfg,
+                "realtime"  : realtime,
+                "rest_url"  : rest_url,
+            })
+
+    return results

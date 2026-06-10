@@ -14,9 +14,6 @@ from __future__ import annotations
 # Importar el servidor FastMCP (define mcp = FastMCP("arcgis-mcp"))
 from _server import mcp  # noqa: F401
 
-# Importar todos los módulos de tools — esto ejecuta los @mcp.tool() decorators
-import tools  # noqa: F401  (tools/__init__.py importa todos los sub-módulos)
-
 # Importar modos de transporte alternativos
 from transport.http_mode import run_http_server
 from transport.sse_mode import run_sse_server

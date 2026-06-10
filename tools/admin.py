@@ -1,22 +1,9 @@
 from __future__ import annotations
-
-import inspect
-import json
-import sys
-import traceback
-from typing import Any, Optional
-
-from arcgis.features import FeatureLayer, FeatureLayerCollection, FeatureSet
-from arcgis.features import FeatureCollection
-from arcgis.geoprocessing import import_toolbox
-from arcgis.mapping import MapImageLayer
-from arcgis import geocoding as arcgis_geocoding
-from arcgis.geometry import functions as geom_functions
+from typing import Any
 
 from _server import mcp
 from _auth import (
-    get_gis, detect_platform, WRITE_ENABLED,
-    _require_write, _require_enterprise, _resolve_layer, _safe_result,
+    get_gis, detect_platform, _require_write, _require_enterprise, _safe_result,
 )
 
 # =========================================================================== #
