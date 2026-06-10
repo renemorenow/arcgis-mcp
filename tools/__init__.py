@@ -13,3 +13,4 @@ from . import maps             # noqa: F401
 from . import geo              # noqa: F401
 from . import spatial          # noqa: F401
 from . import org              # noqa: F401
+from . import docs             # noqa: F401

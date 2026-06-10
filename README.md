@@ -17,12 +17,15 @@ Servidor MCP para **ArcGIS Online** y **ArcGIS Enterprise** que combina:
 
 1. **Descarga o clona** esta carpeta (`arcgis-mcp`)
 2. **Ejecuta el instalador** — clic derecho sobre `install.ps1` → *Ejecutar con PowerShell*  
-   Detecta tu Python de ArcGIS Pro, instala dependencias y configura los IDEs instalados automáticamente (VS Code, Claude Desktop, Cursor, Claude Code, Codex, OpenCode, OpenClaw).
-3. **Abrí ArcGIS Pro**, conectate a tu portal, y reinicia el IDE.
+   Detecta Python automáticamente (ArcGIS Pro, sistema, Miniconda/Anaconda o lo instala vía `winget`). Instala dependencias y configura los IDEs instalados (VS Code, Claude Desktop, Cursor, Claude Code, Codex, OpenCode, OpenClaw).
+3. **Configurá la autenticación** y reiniciá el IDE:
+   - **Con ArcGIS Pro**: abrí Pro, conectate a tu portal — listo.
+   - **Sin ArcGIS Pro**: editá el `.env` con tu método preferido (OAuth2, API Key, perfil o usuario/contraseña). Ver sección [Autenticación](#autenticación).
 
 Proba con: *"¿con qué usuario estoy conectado?"*
 
-> Si algo no funciona: `python test_pro.py` para diagnosticar la conexión.
+> Sin ArcGIS Pro: `python test_oauth.py` para verificar la conexión.  
+> Con ArcGIS Pro: `python test_pro.py`.
 
 ---
 
@@ -244,7 +247,7 @@ Archivo de proyecto: `opencode.json` en la raíz del proyecto.
 
 ---
 
-![alt text](image-4.png)
+![alt text](img/image-4.png)
 
 Puede usar el metodo **pro**. Si no, puede usar este metodo pero debe estar diligenciadas las variables: **ARCGIS_URL, ARCGIS_CLIENT_ID** en el archivo .env
 
@@ -298,7 +301,7 @@ El campo `autoApprove` es opcional — lista las tools que Kiro ejecuta sin pedi
 ---
 
 **copilot:**
-![alt text](image-5.png)
+![alt text](img/img/image-5.png)
 
 📖 **Guía completa:** esta misma documentación en este README.
 
@@ -308,9 +311,9 @@ El campo `autoApprove` es opcional — lista las tools que Kiro ejecuta sin pedi
 
 ### Modo 1: MCP Puro (Recomendado) ✅
 
-![alt text](image-2.png)
+![alt text](img/image-2.png)
 
-![alt text](image-3.png)
+![alt text](img/image-3.png)
 
 **Para usar desde Claude Desktop o VS Code:**
 - No ejecutar manualmente
@@ -391,6 +394,43 @@ Este MCP está diseñado para ser consumido por:
 - VS Code
 - OpenCode
 - Cualquier cliente MCP compatible
+
+### 🤖 Agente especializado: `arcgis-apyt-dev`
+
+El repositorio incluye un agente experto en ArcGIS API for Python que se instala automáticamente con `install.ps1` en cada IDE detectado.
+
+#### Capacidades
+
+El agente opera como orquestador con 4 niveles de escalada:
+
+```
+1. Usa las 152 tools del MCP directamente cuando cubren la tarea
+2. Si el MCP no alcanza → busca el path correcto en el API con arcgis_docs_* y ejecuta Python
+3. Si la operación es genérica y reutilizable → escribe un nuevo @mcp.tool() en tools/*.py
+4. Solo responde "no es posible" cuando los 3 caminos anteriores fallan
+```
+
+#### Instalación manual (si no usaste `install.ps1`)
+
+| IDE | Archivo fuente | Destino |
+|-----|---------------|---------|
+| VS Code / Copilot | `agents/arcgis-apyt-dev.vscode.agent.md` | `%APPDATA%\Code\User\prompts\` |
+| Claude Code | `agents/arcgis-apyt-dev.claude.md` | `~/.claude/agents/` |
+| Cursor | `agents/arcgis-apyt-dev.cursor.mdc` | `~/.cursor/rules/` |
+| Codex CLI | `agents/arcgis-apyt-dev.codex.md` | Append a `~/.codex/AGENTS.md` |
+
+#### Ejemplos de uso del agente
+
+```
+"Descarga todos los attachments del Feature Layer de inspecciones"
+→ No existe tool MCP → agente busca FeatureLayer.attachments.get_list() y ejecuta Python directo
+
+"Necesito un tool MCP para clonar grupos entre portales"
+→ Agente verifica la API, escribe el @mcp.tool() en tools/users_groups.py y lo registra
+
+"Lista todos los servicios de imagen del Enterprise"
+→ server_services_list(service_type="ImageServer") — MCP tool directa
+```
 
 ### Ejemplos de prompts
 

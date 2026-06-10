@@ -4,10 +4,17 @@
 #      o desde terminal: .\install.ps1
 #
 # Que hace:
-#   1. Detecta el entorno Python de ArcGIS Pro automaticamente
+#   1. Detecta Python automaticamente en este orden:
+#        a) Entorno conda de ArcGIS Pro  (conexion GIS("Pro") disponible)
+#        b) Python del sistema / Miniconda / Anaconda (3.9+)
+#        c) Instala Python 3.12 via winget si esta disponible
+#        d) Muestra link de descarga y permite ingresar ruta manual
 #   2. Instala las dependencias necesarias
 #   3. Configura los IDEs instalados en tu maquina
 #      (VS Code, Claude Desktop, Cursor, Codex, Claude Code, OpenCode, OpenClaw)
+#
+# No requiere ArcGIS Pro. Sin el, el modo GIS("Pro") no estara disponible,
+# pero OAuth2, API Key, perfil y usuario/contrasena funcionan igual.
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
@@ -157,14 +164,16 @@ if (-not (Test-Path $MCP_SCRIPT)) {
 }
 
 # ---------------------------------------------------------------------------
-# PASO 1: Detectar Python de ArcGIS Pro
+# PASO 1: Detectar Python (ArcGIS Pro, sistema o instalar)
 # ---------------------------------------------------------------------------
 
-Write-Header "PASO 1 - Detectando entorno Python de ArcGIS Pro"
+Write-Header "PASO 1 - Detectando Python"
 
-$PYTHON_EXE = $null
-$candidates = [System.Collections.Generic.List[string]]::new()
+$PYTHON_EXE     = $null
+$HAS_ARCGIS_PRO = $false
+$candidates     = [System.Collections.Generic.List[string]]::new()
 
+# — A) Buscar entornos conda de ArcGIS Pro —
 $esriLocal = Join-Path $env:LOCALAPPDATA "ESRI\conda\envs"
 if (Test-Path $esriLocal) {
     Get-ChildItem $esriLocal -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -181,35 +190,124 @@ if (Test-Path $esriData) {
     }
 }
 
-$staticPy = "C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3\python.exe"
-if (Test-Path $staticPy) { $candidates.Add($staticPy) }
+$esriPF = "C:\Program Files\ArcGIS\Pro\bin\Python\envs"
+if (Test-Path $esriPF) {
+    Get-ChildItem $esriPF -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $py = Join-Path $_.FullName "python.exe"
+        if (Test-Path $py) { $candidates.Add($py) }
+    }
+}
 
+# Preferir clone de ArcGIS Pro
 $PYTHON_EXE = $candidates | Where-Object { $_ -like "*clone*" } | Select-Object -First 1
 if (-not $PYTHON_EXE) {
     $PYTHON_EXE = $candidates | Select-Object -First 1
 }
 
-if (-not $PYTHON_EXE) {
-    Write-Fail "No se encontro ArcGIS Pro ni su entorno Python."
-    Write-Host ""
-    Write-Host "  Opciones:" -ForegroundColor Yellow
-    Write-Host "  1. Instala ArcGIS Pro y vuelve a ejecutar este script." -ForegroundColor Yellow
-    Write-Host "  2. Ingresa la ruta manualmente:" -ForegroundColor Yellow
-    $PYTHON_EXE = Read-Host "     Ruta al python.exe de ArcGIS Pro"
-    if (-not (Test-Path $PYTHON_EXE)) {
-        Write-Fail "Ruta invalida. Abortando."
-        Read-Host "`nPresiona ENTER para salir"
-        exit 1
+if ($PYTHON_EXE) {
+    $HAS_ARCGIS_PRO = $true
+    Write-Ok "ArcGIS Pro Python: $PYTHON_EXE"
+} else {
+    Write-Skip "ArcGIS Pro no encontrado. Buscando Python del sistema..."
+
+    # — B) Buscar Python en PATH —
+    foreach ($cmd in @("python", "python3")) {
+        $found = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($found) { $PYTHON_EXE = $found.Source; break }
+    }
+
+    # — C) Buscar en ubicaciones comunes de instalacion —
+    if (-not $PYTHON_EXE) {
+        $commonPatterns = @(
+            "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+            "$env:ProgramFiles\Python3*\python.exe",
+            "C:\Python3*\python.exe",
+            "$env:USERPROFILE\miniconda3\python.exe",
+            "$env:LOCALAPPDATA\miniconda3\python.exe",
+            "$env:USERPROFILE\anaconda3\python.exe",
+            "$env:LOCALAPPDATA\anaconda3\python.exe",
+            "$env:ProgramData\miniconda3\python.exe",
+            "$env:ProgramData\anaconda3\python.exe"
+        )
+        foreach ($pattern in $commonPatterns) {
+            $hit = Resolve-Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($hit) { $PYTHON_EXE = $hit.Path; break }
+        }
+    }
+
+    # Validar version (requiere 3.9+)
+    if ($PYTHON_EXE) {
+        $pyVerStr = & $PYTHON_EXE --version 2>&1
+        if ($pyVerStr -match 'Python (\d+)\.(\d+)') {
+            $pyMaj = [int]$Matches[1]; $pyMin = [int]$Matches[2]
+            if ($pyMaj -lt 3 -or ($pyMaj -eq 3 -and $pyMin -lt 9)) {
+                Write-Warn "Python $pyMaj.$pyMin encontrado pero requiere 3.9+. Ignorando."
+                $PYTHON_EXE = $null
+            } else {
+                Write-Ok "Python $pyMaj.$pyMin del sistema: $PYTHON_EXE"
+                Write-Warn "Sin ArcGIS Pro el modo GIS('Pro') no estara disponible."
+                Write-Warn "OAuth2, API Key, perfil y usuario/contrasena funcionan igual."
+            }
+        } else {
+            $PYTHON_EXE = $null
+        }
+    }
+
+    # — D) Instalar Python si no hay nada —
+    if (-not $PYTHON_EXE) {
+        Write-Fail "No se encontro Python 3.9+ en este equipo."
+        Write-Host ""
+
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($winget) {
+            Write-Host "  winget detectado. Instalando Python 3.12 automaticamente..." -ForegroundColor Cyan
+            Write-Host ""
+            winget install --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -eq 0) {
+                # Recargar PATH en la sesion actual
+                $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                            [System.Environment]::GetEnvironmentVariable("PATH", "User")
+                $found = Get-Command python -ErrorAction SilentlyContinue
+                if ($found) {
+                    $PYTHON_EXE = $found.Source
+                    Write-Ok "Python instalado y listo: $PYTHON_EXE"
+                } else {
+                    Write-Warn "Python instalado. Cierra esta ventana, abre PowerShell nuevamente"
+                    Write-Warn "y ejecuta el script otra vez para que el PATH se actualice."
+                    Read-Host "`nPresiona ENTER para salir"
+                    exit 0
+                }
+            } else {
+                Write-Warn "winget no pudo completar la instalacion."
+            }
+        }
+
+        # Fallback: link de descarga + ruta manual
+        if (-not $PYTHON_EXE) {
+            Write-Host ""
+            Write-Host "  Instala Python manualmente (marcar 'Add Python to PATH'):" -ForegroundColor Yellow
+            Write-Host "  https://www.python.org/downloads/release/python-3129/" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "  Luego vuelve a ejecutar este script." -ForegroundColor Yellow
+            Write-Host "  O bien ingresa ahora la ruta al python.exe que quieras usar:" -ForegroundColor Yellow
+            $manual = Read-Host "  Ruta a python.exe (ENTER para cancelar)"
+            if ($manual -and (Test-Path $manual)) {
+                $PYTHON_EXE = $manual
+                Write-Ok "Usando: $PYTHON_EXE"
+            } else {
+                Write-Fail "Sin Python no es posible continuar. Abortando."
+                Read-Host "`nPresiona ENTER para salir"
+                exit 1
+            }
+        }
     }
 }
 
-Write-Ok "Python: $PYTHON_EXE"
-
 $hasArcgis = & $PYTHON_EXE -c "import arcgis; print(arcgis.__version__)" 2>$null
 if ($hasArcgis) {
-    Write-Ok "arcgis $hasArcgis detectado"
+    Write-Ok "Paquete arcgis $hasArcgis detectado"
 } else {
-    Write-Warn "El entorno no tiene arcgis. Se intentara instalar."
+    Write-Skip "Paquete arcgis no instalado aun. Se instalara en el siguiente paso."
 }
 
 # ---------------------------------------------------------------------------
@@ -430,6 +528,77 @@ if ($openClawFound) {
 }
 
 # ---------------------------------------------------------------------------
+# PASO 5: Desplegar agente arcgis-apyt-dev en los IDEs detectados
+# ---------------------------------------------------------------------------
+
+Write-Header "PASO 5 - Instalando agente arcgis-apyt-dev"
+
+$agentsDir    = Join-Path $SCRIPT_DIR "agents"
+$agentsDeployed = [System.Collections.Generic.List[string]]::new()
+
+# ---- VS Code ----------------------------------------------------------------
+if ($configured -contains "VS Code") {
+    $src  = Join-Path $agentsDir "arcgis-apyt-dev.vscode.agent.md"
+    $dest = Join-Path $env:APPDATA "Code\User\prompts\arcgis-apyt-dev.agent.md"
+    try {
+        $promptsDir = Split-Path $dest -Parent
+        if (-not (Test-Path $promptsDir)) { New-Item -ItemType Directory -Path $promptsDir -Force | Out-Null }
+        Copy-Item $src $dest -Force
+        Write-Ok "Agente VS Code desplegado"
+        $agentsDeployed.Add("VS Code")
+    } catch { Write-Warn "Agente VS Code: error -> $_" }
+}
+
+# ---- Cursor -----------------------------------------------------------------
+if ($configured -contains "Cursor") {
+    $src  = Join-Path $agentsDir "arcgis-apyt-dev.cursor.mdc"
+    $dest = Join-Path $env:USERPROFILE ".cursor\rules\arcgis-apyt-dev.mdc"
+    try {
+        $rulesDir = Split-Path $dest -Parent
+        if (-not (Test-Path $rulesDir)) { New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null }
+        Copy-Item $src $dest -Force
+        Write-Ok "Agente Cursor desplegado"
+        $agentsDeployed.Add("Cursor")
+    } catch { Write-Warn "Agente Cursor: error -> $_" }
+}
+
+# ---- Claude Code ------------------------------------------------------------
+if ($configured -contains "Claude Code") {
+    $src      = Join-Path $agentsDir "arcgis-apyt-dev.claude.md"
+    $dest     = Join-Path $env:USERPROFILE ".claude\agents\arcgis-apyt-dev.md"
+    try {
+        $agDir = Split-Path $dest -Parent
+        if (-not (Test-Path $agDir)) { New-Item -ItemType Directory -Path $agDir -Force | Out-Null }
+        Copy-Item $src $dest -Force
+        Write-Ok "Agente Claude Code desplegado"
+        $agentsDeployed.Add("Claude Code")
+    } catch { Write-Warn "Agente Claude Code: error -> $_" }
+}
+
+# ---- Codex ------------------------------------------------------------------
+if ($configured -contains "Codex") {
+    $src        = Join-Path $agentsDir "arcgis-apyt-dev.codex.md"
+    $destAgents = Join-Path $env:USERPROFILE ".codex\AGENTS.md"
+    try {
+        $block = [System.IO.File]::ReadAllText($src, [System.Text.Encoding]::UTF8)
+        if (Test-Path $destAgents) {
+            $existing = [System.IO.File]::ReadAllText($destAgents, [System.Text.Encoding]::UTF8)
+            if ($existing -notmatch "arcgis-apyt-dev") {
+                [System.IO.File]::WriteAllText($destAgents, $existing + "`n" + $block, [System.Text.Encoding]::UTF8)
+            }
+        } else {
+            [System.IO.File]::WriteAllText($destAgents, $block, [System.Text.Encoding]::UTF8)
+        }
+        Write-Ok "Agente Codex desplegado"
+        $agentsDeployed.Add("Codex")
+    } catch { Write-Warn "Agente Codex: error -> $_" }
+}
+
+if ($agentsDeployed.Count -eq 0) {
+    Write-Skip "Ningun IDE compatible detectado para el agente"
+}
+
+# ---------------------------------------------------------------------------
 # Resumen
 # ---------------------------------------------------------------------------
 
@@ -441,8 +610,14 @@ Write-Host "  Script : $MCP_SCRIPT"  -ForegroundColor DarkGray
 Write-Host ""
 
 if ($configured.Count -gt 0) {
-    Write-Host "  IDEs configurados:" -ForegroundColor Green
+    Write-Host "  IDEs configurados (MCP):" -ForegroundColor Green
     foreach ($ide in $configured) { Write-Host "    + $ide" -ForegroundColor Green }
+}
+
+if ($agentsDeployed.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Agente arcgis-apyt-dev desplegado en:" -ForegroundColor Green
+    foreach ($ide in $agentsDeployed) { Write-Host "    + $ide" -ForegroundColor Green }
 }
 
 if ($skipped.Count -gt 0) {
@@ -453,7 +628,14 @@ if ($skipped.Count -gt 0) {
 
 Write-Host ""
 Write-Host "  PROXIMOS PASOS:" -ForegroundColor Cyan
-Write-Host "  1. Abre ArcGIS Pro y conectate a tu portal." -ForegroundColor White
+if ($HAS_ARCGIS_PRO) {
+    Write-Host "  1. Abre ArcGIS Pro y conectate a tu portal (modo Pro automatico)." -ForegroundColor White
+} else {
+    Write-Host "  1. Configura autenticacion en el .env de la carpeta arcgis-mcp." -ForegroundColor White
+    Write-Host "     Opcion recomendada (abre navegador, sin contrasena en disco):" -ForegroundColor DarkGray
+    Write-Host "       ARCGIS_USE_OAUTH=true" -ForegroundColor DarkGray
+    Write-Host "     Otras opciones: ARCGIS_API_KEY, ARCGIS_PROFILE, ARCGIS_USER/PASS" -ForegroundColor DarkGray
+}
 Write-Host "  2. Reinicia los IDEs configurados arriba." -ForegroundColor White
 Write-Host "  3. Busca 'arcgis-mcp' en la lista de servidores MCP." -ForegroundColor White
 Write-Host "  4. Prueba con: 'con que usuario estoy conectado?'" -ForegroundColor White
