@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Any
 
-from arcgis.gis import GIS
 import concurrent.futures
 
 from _server import mcp
@@ -432,13 +431,12 @@ def server_services_folders(server_role: str = "HOSTING_SERVER") -> list:
 # Cubre TODOS los servidores federados (arcgis, image, etc.)
 # ─────────────────────────────────────────────────────────────────────────────
 @mcp.tool()
-def server_ping_all(gis: GIS, folder: str = "", parallel: bool = True) -> list[dict]:
+def server_ping_all(folder: str = "", parallel: bool = True) -> list[dict]:
     """
     Verifica el estado REST de cada servicio en todos los servidores federados.
 
     Parámetros
     ----------
-    gis     : GIS — sesión activa
     folder  : str — filtrar por carpeta (vacío = todas)
     parallel: bool — usar ThreadPoolExecutor para velocidad (default True)
 
@@ -448,7 +446,7 @@ def server_ping_all(gis: GIS, folder: str = "", parallel: bool = True) -> list[d
                         service_type, rest_url, status, raster_count,
                         layer_count, error
     """
-
+    gis = get_gis()
     def _ping_service(svc_info: dict) -> dict:
         """Hace GET al endpoint REST del servicio y retorna su estado."""
         rest_url = svc_info["rest_url"]
@@ -541,7 +539,7 @@ def server_ping_all(gis: GIS, folder: str = "", parallel: bool = True) -> list[d
 # Como admin_services_health pero para TODOS los servidores federados.
 # ─────────────────────────────────────────────────────────────────────────────
 @mcp.tool()
-def server_services_health_all(gis: GIS) -> dict:
+def server_services_health_all() -> dict:
     """
     Retorna el estado admin (STARTED/STOPPED) de cada servicio
     en todos los servidores federados.
@@ -557,7 +555,7 @@ def server_services_health_all(gis: GIS) -> dict:
     """
     all_results  = []
     stopped      = []
-
+    gis = get_gis()
     for server in gis.admin.servers.list():
         role       = getattr(server, "serverRole", "UNKNOWN")
         server_url = server.url
@@ -623,13 +621,12 @@ def server_services_health_all(gis: GIS) -> dict:
 # Lista servicios del Image Server por carpeta usando gis.admin.servers.get()
 # ─────────────────────────────────────────────────────────────────────────────
 @mcp.tool()
-def image_server_services_list(gis: GIS, folder: str = "") -> list[dict]:
+def image_server_services_list(folder: str = "") -> list[dict]:
     """
     Lista servicios publicados en el Image Server federado.
 
     Parámetros
     ----------
-    gis   : GIS — sesión activa
     folder: str — carpeta a listar (vacío = todas)
 
     Retorna
@@ -637,7 +634,7 @@ def image_server_services_list(gis: GIS, folder: str = "") -> list[dict]:
     Lista de dicts con: folder, name, type, status, rest_url
     """
     results = []
-
+    gis = get_gis()
     # Buscar el servidor con rol IMAGE_SERVER entre los federados
     image_server = None
     for server in gis.admin.servers.list():
