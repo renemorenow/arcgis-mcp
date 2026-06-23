@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+from arcgis import GIS
 
 from _server import mcp
 from _auth import (
@@ -9,6 +10,22 @@ from _auth import (
 # =========================================================================== #
 #   ADMINISTRACIÓN BÁSICA
 # =========================================================================== #
+@mcp.tool()
+def get_gis_con() -> GIS:
+    """Obtiene la instancia de la conexión GIS."""
+    gis = get_gis()
+    return gis
+
+
+@mcp.tool()
+def get_dynamic_gis(prop_func: str = "url", module_class: Any = None) -> str:
+    """Obtiene: modulo, clase, propiedad o función dinámicamente usando ArcGIS API for Python."""
+    if module_class:
+        return getattr(module_class, prop_func, None)
+    gis = get_gis()
+    return getattr(gis, prop_func, None)
+
+
 @mcp.tool()
 def user_list(query: str = "", max_users: int = 50) -> list:
     """Lista usuarios de la organización."""
@@ -231,7 +248,10 @@ def admin_licenses() -> list:
     gis = get_gis()
     _require_enterprise(gis)
     licencias = gis.admin.license.all()
-    return [{"name": l["name"], "available": l["available"]} for l in licencias if "Pro" in l["name"]]
+    return [
+        dict(l.properties.listing.items())
+        for l in licencias
+    ]
 
 
 @mcp.tool()

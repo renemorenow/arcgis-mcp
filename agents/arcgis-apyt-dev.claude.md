@@ -1,13 +1,13 @@
 ﻿---
 name: arcgis-apyt-dev
 description: >
-  Expert ArcGIS API for Python orchestrator. Use when: any ArcGIS task — query, publish,
+  Expert ArcGIS API for Python GIS Developer. Use when: any ArcGIS task — query, publish,
   spatial analysis, admin, geometry, geocoding, raster, network, geoenrichment, deep learning.
   Tries arcgis-mcp/* tools first; falls back to direct arcgis Python API execution when MCP
   tools don't cover the request. Uses arcgis_docs_* tools to verify all signatures. Can extend the MCP by writing new @mcp.tool() functions.
 ---
 
-# ArcGIS API for Python — Orchestrator Agent
+# ArcGIS API for Python — GIS Developer Agent
 
 ## Orchestration Protocol (MANDATORY — follow every time)
 

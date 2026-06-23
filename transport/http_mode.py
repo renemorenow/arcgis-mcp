@@ -14,7 +14,7 @@ from tools.geoprocessing import (
     gp_linear_unit, gp_data_file, gp_raster_data, gp_run_with_env,
 )
 from tools.admin import (
-    user_list, user_create, group_list,
+    get_gis_con, get_dynamic_gis, user_list, user_create, group_list,
     portal_logs_query, portal_logs_clean, portal_logs_settings, portal_logs_settings_update,
     admin_licenses, admin_services_health, admin_servers_list,
     org_credits, org_usage,
@@ -81,7 +81,7 @@ from tools.org import (
 # --------------------------------------------------------------------------- #
 # MODO HTTP (FastAPI opcional)
 # --------------------------------------------------------------------------- #
-def run_http_server():
+def run_http_server(port: int = 8080):
     """Levanta servidor FastAPI para exposición HTTP de las tools MCP."""
     from fastapi import FastAPI, Body, HTTPException
     from fastapi.responses import JSONResponse, HTMLResponse
@@ -118,6 +118,8 @@ def run_http_server():
         "gp_raster_data": gp_raster_data,
         "gp_run_with_env": gp_run_with_env,
         # Admin Básica
+        "get_gis_con": get_gis_con,
+        "get_dynamic_gis": get_dynamic_gis, 
         "user_list": user_list,
         "user_create": user_create,
         "group_list": group_list,
@@ -362,7 +364,7 @@ def run_http_server():
     print(f"Tools disponibles: {len(TOOLS)}")
     
     # Ejecutar uvicorn con la aplicación
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     server.run()
 

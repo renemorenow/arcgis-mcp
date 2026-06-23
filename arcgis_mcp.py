@@ -22,6 +22,7 @@ if __name__ == "__main__":
     import sys
 
     _args = sys.argv[1:]
+    # _args = ["--http", "--port", "8080"] if not _args else _args  # Activar esta linea con Valores por defecto para DEBUG
 
     # Leer --port N si se pasa
     _port = 8080
@@ -38,7 +39,7 @@ if __name__ == "__main__":
         run_sse_server(port=_port)
     elif "--http" in _args:
         # Modo HTTP: FastAPI custom (endpoints REST, Swagger UI)
-        run_http_server()
+        run_http_server(port=_port)
     else:
         # Modo stdio: MCP estándar para desarrolladores / clientes locales
         # (Claude Desktop, VS Code MCP, etc.)
