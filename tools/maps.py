@@ -2,7 +2,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from arcgis.mapping import MapImageLayer
+import arcgis
+if hasattr(arcgis, "mapping"):
+    from arcgis.mapping import MapImageLayer
 
 from _server import mcp
 from _auth import (
