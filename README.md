@@ -100,6 +100,8 @@ python install_requirements.py
 python verify_installation.py
 ```
 
+`install_requirements.py` ahora ejecuta una validación post-instalación del runtime crítico (`arcgis`, `fastmcp`, `dotenv` y dependencias MCP relacionadas). Si el entorno queda inconsistente — por ejemplo, una instalación contaminada de ArcGIS Pro o un `pyarrow` requerido pero no importable — el script termina con error. `pip check` se reporta también, pero los conflictos ajenos al runtime de este proyecto quedan como advertencias no bloqueantes.
+
 `install_requirements.py` selecciona automáticamente un perfil de compatibilidad según la versión real de Python activa:
 - `constraints-py311.txt`
 - `constraints-py312.txt`

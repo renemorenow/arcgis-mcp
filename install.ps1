@@ -80,7 +80,21 @@ function Get-ArcGISProEnvInfo {
     param([string]$PythonExe)
 
     try {
-        $proVersion = & $PythonExe -c "from importlib.metadata import PackageNotFoundError, version;`ntry:`n    print(version('arcgispro'))`nexcept PackageNotFoundError:`n    print('')" 2>$null
+        $proVersion = & $PythonExe -c @"
+try:
+    import arcpy
+    info = arcpy.GetInstallInfo()
+    print((info or {}).get('Version', ''))
+except Exception:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            print(version('arcgispro'))
+        except PackageNotFoundError:
+            print('')
+    except Exception:
+        print('')
+"@ 2>$null
         $proVersion = "$proVersion".Trim()
         if (-not $proVersion) { return $null }
 
@@ -440,15 +454,17 @@ Write-Header "PASO 2 - Instalando dependencias"
 $installScript = Join-Path $SCRIPT_DIR "install_requirements.py"
 Write-Host "  Ejecutando instalacion inteligente de dependencias ..." -ForegroundColor DarkGray
 
-try {
-    & $PYTHON_EXE $installScript
-    if ($LASTEXITCODE -ne 0) { throw "install_requirements.py retorno codigo $LASTEXITCODE" }
-    Write-Ok "Dependencias instaladas"
-} catch {
-    Write-Fail "Error: $_"
+& $PYTHON_EXE $installScript
+$installExitCode = $LASTEXITCODE
+
+if ($installExitCode -ne 0) {
+    Write-Fail "La instalacion/validacion del runtime fallo (codigo $installExitCode)."
+    Write-Host "  Revisa el resumen de fallos criticos mostrado arriba." -ForegroundColor Yellow
     Read-Host "`nPresiona ENTER para salir"
-    exit 1
+    exit $installExitCode
 }
+
+Write-Ok "Dependencias instaladas y runtime validado"
 
 # ---------------------------------------------------------------------------
 # PASO 3: Verificar que el servidor arranca
