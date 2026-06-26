@@ -5,8 +5,9 @@
 #
 # Que hace:
 #   1. Detecta Python automaticamente en este orden:
-#        a) Entorno conda de ArcGIS Pro  (conexion GIS("Pro") disponible)
-#        b) Python del sistema / Miniconda / Anaconda (3.9+)
+#        a) Entorno conda de ArcGIS Pro >= 3.3 (conexion GIS("Pro") soportada)
+#        b) Python externo del sistema / Miniconda / Anaconda (3.11+)
+#           si ArcGIS Pro es < 3.3 o no existe
 #        c) Instala Python 3.12 via winget si esta disponible
 #        d) Muestra link de descarga y permite ingresar ruta manual
 #   2. Instala las dependencias necesarias
@@ -39,6 +40,65 @@ function Get-CmdPath($name) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $null
+}
+
+function Get-PythonVersionInfo {
+    param([string]$PythonExe)
+
+    try {
+        $pyVerStr = & $PythonExe --version 2>&1
+        if ($pyVerStr -match 'Python (\d+)\.(\d+)(?:\.(\d+))?') {
+            return [PSCustomObject]@{
+                Major   = [int]$Matches[1]
+                Minor   = [int]$Matches[2]
+                Patch   = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+                Display = "$($Matches[1]).$($Matches[2])"
+                Raw     = $pyVerStr
+            }
+        }
+    } catch {
+    }
+
+    return $null
+}
+
+function Test-MinPython {
+    param(
+        [string]$PythonExe,
+        [int]$MinMajor,
+        [int]$MinMinor
+    )
+
+    $info = Get-PythonVersionInfo -PythonExe $PythonExe
+    if (-not $info) { return $false }
+    if ($info.Major -gt $MinMajor) { return $true }
+    if ($info.Major -eq $MinMajor -and $info.Minor -ge $MinMinor) { return $true }
+    return $false
+}
+
+function Get-ArcGISProEnvInfo {
+    param([string]$PythonExe)
+
+    try {
+        $proVersion = & $PythonExe -c "from importlib.metadata import PackageNotFoundError, version;`ntry:`n    print(version('arcgispro'))`nexcept PackageNotFoundError:`n    print('')" 2>$null
+        $proVersion = "$proVersion".Trim()
+        if (-not $proVersion) { return $null }
+
+        $majorMinor = ($proVersion -split '\.') | Select-Object -First 2
+        if ($majorMinor.Count -lt 2) { return $null }
+
+        $normalized = "$($majorMinor[0]).$($majorMinor[1])"
+        $verObj = [version]$normalized
+
+        return [PSCustomObject]@{
+            PythonExe       = $PythonExe
+            ProVersion      = $normalized
+            SupportsMcp     = ($verObj -ge [version]'3.3')
+            DisableProAuth  = ($verObj -lt [version]'3.3')
+        }
+    } catch {
+        return $null
+    }
 }
 
 # Merge seguro de un MCP server en un JSON existente
@@ -118,7 +178,14 @@ function Merge-VsCodeSettings {
 
 # Merge para Codex config.toml (TOML manual)
 function Merge-CodexToml {
-    param([string]$ConfigPath, [string]$PythonExe, [string]$ScriptPath)
+    param(
+        [string]$ConfigPath,
+        [string]$PythonExe,
+        [string]$ScriptPath,
+        [bool]$DisableProMode,
+        [string]$RuntimeMode,
+        [string]$ProVersion
+    )
 
     $dir = Split-Path $ConfigPath -Parent
     if (-not (Test-Path $dir)) {
@@ -128,7 +195,18 @@ function Merge-CodexToml {
     $pyEscaped = $PythonExe  -replace '\\', '\\'
     $scEscaped = $ScriptPath -replace '\\', '\\'
 
-    $newBlock = "`n[mcp_servers.arcgis-mcp]`ncommand = `"$pyEscaped`"`nargs = [`"$scEscaped`"]`n`n[mcp_servers.arcgis-mcp.env]`nARCGIS_WRITE_ENABLED = `"false`"`n"
+    $envBlock = @(
+        '[mcp_servers.arcgis-mcp.env]',
+        'ARCGIS_WRITE_ENABLED = "false"',
+        ('ARCGIS_DISABLE_PRO = "' + $DisableProMode.ToString().ToLower() + '"'),
+        ('ARCGIS_RUNTIME_MODE = "' + $RuntimeMode + '"')
+    )
+
+    if ($ProVersion) {
+        $envBlock += ('ARCGIS_PRO_VERSION = "' + $ProVersion + '"')
+    }
+
+    $newBlock = "`n[mcp_servers.arcgis-mcp]`ncommand = `"$pyEscaped`"`nargs = [`"$scEscaped`"]`n`n" + ($envBlock -join "`n") + "`n"
 
     if (Test-Path $ConfigPath) {
         $content = Get-Content $ConfigPath -Raw -Encoding UTF8
@@ -167,12 +245,15 @@ if (-not (Test-Path $MCP_SCRIPT)) {
 # PASO 1: Detectar Python (ArcGIS Pro, sistema o instalar)
 # ---------------------------------------------------------------------------
 
-Write-Header "PASO 1 - Detectando Python"
+Write-Header "PASO 1 - Detectando Python y compatibilidad con ArcGIS Pro"
 
 $PYTHON_EXE     = $null
 $HAS_ARCGIS_PRO = $false
+$ARCGIS_PRO_VERSION = $null
+$PRO_SUPPORTS_INTEGRATED_RUNTIME = $false
+$DISABLE_PRO_MODE = $false
+$RUNTIME_MODE = "external"
 $candidates     = [System.Collections.Generic.List[string]]::new()
-
 # — A) Buscar entornos conda de ArcGIS Pro —
 $esriLocal = Join-Path $env:LOCALAPPDATA "ESRI\conda\envs"
 if (Test-Path $esriLocal) {
@@ -198,17 +279,42 @@ if (Test-Path $esriPF) {
     }
 }
 
-# Preferir clone de ArcGIS Pro
-$PYTHON_EXE = $candidates | Where-Object { $_ -like "*clone*" } | Select-Object -First 1
-if (-not $PYTHON_EXE) {
-    $PYTHON_EXE = $candidates | Select-Object -First 1
+# Preferir clone de ArcGIS Pro y decidir segun version
+$selectedProPython = $candidates | Where-Object { $_ -like "*clone*" } | Select-Object -First 1
+if (-not $selectedProPython) {
+    $selectedProPython = $candidates | Select-Object -First 1
 }
 
-if ($PYTHON_EXE) {
+if ($selectedProPython) {
     $HAS_ARCGIS_PRO = $true
-    Write-Ok "ArcGIS Pro Python: $PYTHON_EXE"
-} else {
-    Write-Skip "ArcGIS Pro no encontrado. Buscando Python del sistema..."
+    $selectedProInfo = Get-ArcGISProEnvInfo -PythonExe $selectedProPython
+
+    if ($selectedProInfo) {
+        $ARCGIS_PRO_VERSION = $selectedProInfo.ProVersion
+        $PRO_SUPPORTS_INTEGRATED_RUNTIME = $selectedProInfo.SupportsMcp
+        $DISABLE_PRO_MODE = $selectedProInfo.DisableProAuth
+
+        if ($PRO_SUPPORTS_INTEGRATED_RUNTIME) {
+            $PYTHON_EXE = $selectedProPython
+            $RUNTIME_MODE = "pro-integrated"
+            Write-Ok "ArcGIS Pro $ARCGIS_PRO_VERSION detectado. Se usara su entorno Python: $PYTHON_EXE"
+        } else {
+            Write-Warn "ArcGIS Pro $ARCGIS_PRO_VERSION detectado. Las versiones inferiores a 3.3 usan Python externo compatible con MCP."
+            Write-Host "  Se buscara o instalara Python 3.11+ fuera del entorno de Pro." -ForegroundColor Yellow
+        }
+    } else {
+        $DISABLE_PRO_MODE = $true
+        Write-Warn "Se detecto un entorno de ArcGIS Pro pero no se pudo determinar su version."
+        Write-Host "  Por seguridad se usara Python externo 3.11+ y se deshabilitara GIS('Pro')." -ForegroundColor Yellow
+    }
+}
+
+if (-not $PYTHON_EXE) {
+    if ($HAS_ARCGIS_PRO) {
+        Write-Skip "Buscando Python externo compatible con MCP..."
+    } else {
+        Write-Skip "ArcGIS Pro no encontrado. Buscando Python del sistema..."
+    }
 
     # — B) Buscar Python en PATH —
     foreach ($cmd in @("python", "python3")) {
@@ -235,18 +341,26 @@ if ($PYTHON_EXE) {
         }
     }
 
-    # Validar version (requiere 3.9+)
+    # Validar version (requiere 3.11+ para FastMCP/MCP)
     if ($PYTHON_EXE) {
-        $pyVerStr = & $PYTHON_EXE --version 2>&1
-        if ($pyVerStr -match 'Python (\d+)\.(\d+)') {
-            $pyMaj = [int]$Matches[1]; $pyMin = [int]$Matches[2]
-            if ($pyMaj -lt 3 -or ($pyMaj -eq 3 -and $pyMin -lt 9)) {
-                Write-Warn "Python $pyMaj.$pyMin encontrado pero requiere 3.9+. Ignorando."
+        $pyInfo = Get-PythonVersionInfo -PythonExe $PYTHON_EXE
+        if ($pyInfo) {
+            $pyMaj = [int]$pyInfo.Major
+            $pyMin = [int]$pyInfo.Minor
+            if ($pyMaj -lt 3 -or ($pyMaj -eq 3 -and $pyMin -lt 11)) {
+                Write-Warn "Python $pyMaj.$pyMin encontrado pero el runtime MCP requiere 3.11+. Ignorando."
                 $PYTHON_EXE = $null
             } else {
                 Write-Ok "Python $pyMaj.$pyMin del sistema: $PYTHON_EXE"
-                Write-Warn "Sin ArcGIS Pro el modo GIS('Pro') no estara disponible."
-                Write-Warn "OAuth2, API Key, perfil y usuario/contrasena funcionan igual."
+                if ($HAS_ARCGIS_PRO -and $DISABLE_PRO_MODE) {
+                    $RUNTIME_MODE = "external-legacy-pro"
+                    Write-Warn "ArcGIS Pro < 3.3 detectado: se usara Python externo y se deshabilitara GIS('Pro')."
+                    Write-Warn "OAuth2, API Key, perfil, token y usuario/contrasena funcionan igual."
+                } else {
+                    $RUNTIME_MODE = "external"
+                    Write-Warn "Sin ArcGIS Pro compatible, el modo GIS('Pro') no estara disponible."
+                    Write-Warn "OAuth2, API Key, perfil y usuario/contrasena funcionan igual."
+                }
             }
         } else {
             $PYTHON_EXE = $null
@@ -255,7 +369,7 @@ if ($PYTHON_EXE) {
 
     # — D) Instalar Python si no hay nada —
     if (-not $PYTHON_EXE) {
-        Write-Fail "No se encontro Python 3.9+ en este equipo."
+        Write-Fail "No se encontro Python 3.11+ compatible con MCP en este equipo."
         Write-Host ""
 
         $winget = Get-Command winget -ErrorAction SilentlyContinue
@@ -270,6 +384,7 @@ if ($PYTHON_EXE) {
                 $found = Get-Command python -ErrorAction SilentlyContinue
                 if ($found) {
                     $PYTHON_EXE = $found.Source
+                    $RUNTIME_MODE = if ($HAS_ARCGIS_PRO -and $DISABLE_PRO_MODE) { "external-legacy-pro" } else { "external" }
                     Write-Ok "Python instalado y listo: $PYTHON_EXE"
                 } else {
                     Write-Warn "Python instalado. Cierra esta ventana, abre PowerShell nuevamente"
@@ -293,6 +408,12 @@ if ($PYTHON_EXE) {
             $manual = Read-Host "  Ruta a python.exe (ENTER para cancelar)"
             if ($manual -and (Test-Path $manual)) {
                 $PYTHON_EXE = $manual
+                if (-not (Test-MinPython -PythonExe $PYTHON_EXE -MinMajor 3 -MinMinor 11)) {
+                    Write-Fail "El Python ingresado no cumple el minimo 3.11 requerido por MCP."
+                    Read-Host "`nPresiona ENTER para salir"
+                    exit 1
+                }
+                $RUNTIME_MODE = if ($HAS_ARCGIS_PRO -and $DISABLE_PRO_MODE) { "external-legacy-pro" } else { "external" }
                 Write-Ok "Usando: $PYTHON_EXE"
             } else {
                 Write-Fail "Sin Python no es posible continuar. Abortando."
@@ -303,9 +424,9 @@ if ($PYTHON_EXE) {
     }
 }
 
-$hasArcgis = & $PYTHON_EXE -c "import arcgis; print(arcgis.__version__)" 2>$null
-if ($hasArcgis) {
-    Write-Ok "Paquete arcgis $hasArcgis detectado"
+$arcgisVersion = & $PYTHON_EXE -c "from importlib.metadata import PackageNotFoundError, version;`ntry:`n    print(version('arcgis'))`nexcept PackageNotFoundError:`n    print('')" 2>$null
+if ($arcgisVersion) {
+    Write-Ok "Paquete arcgis $arcgisVersion detectado"
 } else {
     Write-Skip "Paquete arcgis no instalado aun. Se instalara en el siguiente paso."
 }
@@ -316,12 +437,12 @@ if ($hasArcgis) {
 
 Write-Header "PASO 2 - Instalando dependencias"
 
-$reqFile = Join-Path $SCRIPT_DIR "requirements.txt"
-Write-Host "  Instalando desde requirements.txt ..." -ForegroundColor DarkGray
+$installScript = Join-Path $SCRIPT_DIR "install_requirements.py"
+Write-Host "  Ejecutando instalacion inteligente de dependencias ..." -ForegroundColor DarkGray
 
 try {
-    & $PYTHON_EXE -m pip install -r $reqFile --quiet --no-warn-script-location
-    if ($LASTEXITCODE -ne 0) { throw "pip retorno codigo $LASTEXITCODE" }
+    & $PYTHON_EXE $installScript
+    if ($LASTEXITCODE -ne 0) { throw "install_requirements.py retorno codigo $LASTEXITCODE" }
     Write-Ok "Dependencias instaladas"
 } catch {
     Write-Fail "Error: $_"
@@ -335,13 +456,28 @@ try {
 
 Write-Header "PASO 3 - Verificando el servidor MCP"
 
-$pyScript = "import sys; sys.path.insert(0, r'" + $SCRIPT_DIR + "'); from _server import mcp; import _auth, tools; print('OK')"
+$pyScript = @"
+import sys
+import traceback
+
+sys.path.insert(0, r'$SCRIPT_DIR')
+
+try:
+    from _server import mcp  # noqa: F401
+    import _auth  # noqa: F401
+    import tools  # noqa: F401
+    print('OK')
+except Exception:
+    print('VERIFY_ERROR')
+    print(traceback.format_exc())
+"@
+
 $verifyResult = & $PYTHON_EXE -c $pyScript 2>&1
 
 if ($verifyResult -match "OK") {
     Write-Ok "Servidor MCP verificado"
 } else {
-    Write-Warn "Verificacion con advertencias (normal si ArcGIS Pro no esta abierto)"
+    Write-Warn "Verificacion con advertencias o error de importacion"
     Write-Host "  $verifyResult" -ForegroundColor DarkGray
 }
 
@@ -354,6 +490,11 @@ Write-Header "PASO 4 - Configurando IDEs"
 # Objeto base del servidor (compatible PS 5.1 - sin hashtable cast a PSObject)
 $baseEnv = New-Object PSObject
 Add-Member -InputObject $baseEnv -NotePropertyName "ARCGIS_WRITE_ENABLED" -NotePropertyValue "false"
+Add-Member -InputObject $baseEnv -NotePropertyName "ARCGIS_DISABLE_PRO" -NotePropertyValue ($DISABLE_PRO_MODE.ToString().ToLower())
+Add-Member -InputObject $baseEnv -NotePropertyName "ARCGIS_RUNTIME_MODE" -NotePropertyValue $RUNTIME_MODE
+if ($ARCGIS_PRO_VERSION) {
+    Add-Member -InputObject $baseEnv -NotePropertyName "ARCGIS_PRO_VERSION" -NotePropertyValue $ARCGIS_PRO_VERSION
+}
 
 $serverBase = New-Object PSObject
 Add-Member -InputObject $serverBase -NotePropertyName "command" -NotePropertyValue $PYTHON_EXE
@@ -363,6 +504,11 @@ Add-Member -InputObject $serverBase -NotePropertyName "env"     -NotePropertyVal
 # OpenCode usa "type" + command como array + "environment"
 $ocEnv = New-Object PSObject
 Add-Member -InputObject $ocEnv -NotePropertyName "ARCGIS_WRITE_ENABLED" -NotePropertyValue "false"
+Add-Member -InputObject $ocEnv -NotePropertyName "ARCGIS_DISABLE_PRO" -NotePropertyValue ($DISABLE_PRO_MODE.ToString().ToLower())
+Add-Member -InputObject $ocEnv -NotePropertyName "ARCGIS_RUNTIME_MODE" -NotePropertyValue $RUNTIME_MODE
+if ($ARCGIS_PRO_VERSION) {
+    Add-Member -InputObject $ocEnv -NotePropertyName "ARCGIS_PRO_VERSION" -NotePropertyValue $ARCGIS_PRO_VERSION
+}
 
 $serverOpenCode = New-Object PSObject
 Add-Member -InputObject $serverOpenCode -NotePropertyName "type"        -NotePropertyValue "local"
@@ -448,6 +594,8 @@ if ($claudeCodeExe) {
             "--scope", "user",
             "--transport", "stdio",
             "--env", "ARCGIS_WRITE_ENABLED=false",
+            "--env", ("ARCGIS_DISABLE_PRO=" + $DISABLE_PRO_MODE.ToString().ToLower()),
+            "--env", ("ARCGIS_RUNTIME_MODE=" + $RUNTIME_MODE),
             "arcgis-mcp", "--",
             $PYTHON_EXE, $MCP_SCRIPT
         )
@@ -470,7 +618,9 @@ $codexFound  = $codexBin -or (Test-Path (Split-Path $codexConfig -Parent))
 if ($codexFound) {
     try {
         Merge-CodexToml -ConfigPath $codexConfig `
-                        -PythonExe $PYTHON_EXE -ScriptPath $MCP_SCRIPT
+                        -PythonExe $PYTHON_EXE -ScriptPath $MCP_SCRIPT `
+                        -DisableProMode $DISABLE_PRO_MODE -RuntimeMode $RUNTIME_MODE `
+                        -ProVersion $ARCGIS_PRO_VERSION
         Write-Ok "Codex configurado"
         $configured.Add("Codex")
     } catch {
@@ -607,6 +757,10 @@ Write-Header "INSTALACION COMPLETADA"
 Write-Host ""
 Write-Host "  Python : $PYTHON_EXE" -ForegroundColor DarkGray
 Write-Host "  Script : $MCP_SCRIPT"  -ForegroundColor DarkGray
+Write-Host "  Runtime: $RUNTIME_MODE" -ForegroundColor DarkGray
+if ($ARCGIS_PRO_VERSION) {
+    Write-Host "  ArcGIS Pro detectado: $ARCGIS_PRO_VERSION" -ForegroundColor DarkGray
+}
 Write-Host ""
 
 if ($configured.Count -gt 0) {
@@ -628,8 +782,11 @@ if ($skipped.Count -gt 0) {
 
 Write-Host ""
 Write-Host "  PROXIMOS PASOS:" -ForegroundColor Cyan
-if ($HAS_ARCGIS_PRO) {
+if ($HAS_ARCGIS_PRO -and -not $DISABLE_PRO_MODE) {
     Write-Host "  1. Abre ArcGIS Pro y conectate a tu portal (modo Pro automatico)." -ForegroundColor White
+} elseif ($HAS_ARCGIS_PRO -and $DISABLE_PRO_MODE) {
+    Write-Host "  1. ArcGIS Pro < 3.3 detectado: el servidor usara Python externo y NO intentara GIS('Pro')." -ForegroundColor White
+    Write-Host "     Configura autenticacion en el .env (OAuth2, API Key, perfil, token o usuario/pass)." -ForegroundColor DarkGray
 } else {
     Write-Host "  1. Configura autenticacion en el .env de la carpeta arcgis-mcp." -ForegroundColor White
     Write-Host "     Opcion recomendada (abre navegador, sin contrasena en disco):" -ForegroundColor DarkGray

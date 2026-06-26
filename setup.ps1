@@ -31,6 +31,11 @@ Write-Host ""
 Write-Host "Este script realizará:" -ForegroundColor Cyan
 Write-Host "  1. Instalación inteligente de dependencias"
 Write-Host "  2. Verificación post-instalación"
+Write-Host "" 
+Write-Host "IMPORTANTE:" -ForegroundColor Yellow
+Write-Host "  setup.ps1 asume que el python activo YA es compatible con MCP." -ForegroundColor Yellow
+Write-Host "  Si tienes ArcGIS Pro < 3.3, usa install.ps1 para que seleccione" -ForegroundColor Yellow
+Write-Host "  automáticamente un Python externo 3.11+." -ForegroundColor Yellow
 Write-Host ""
 
 $response = Read-Host "¿Continuar? (S/N)"

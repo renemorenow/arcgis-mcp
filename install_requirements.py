@@ -4,6 +4,7 @@ Solo instala paquetes que NO están presentes en el entorno actual.
 """
 import subprocess
 import sys
+from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 
 
@@ -25,15 +26,42 @@ def read_requirements(file_path='requirements.txt'):
         return [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
 
+def select_constraints_file(base_dir: Path):
+    """Selecciona el archivo de constraints según la versión real de Python."""
+    py = sys.version_info
+
+    if py.major != 3 or py.minor < 11:
+        raise RuntimeError(
+            f"Python {py.major}.{py.minor} no es compatible con MCP. Se requiere 3.11+"
+        )
+
+    if py.minor == 11:
+        name = 'constraints-py311.txt'
+    elif py.minor == 12:
+        name = 'constraints-py312.txt'
+    else:
+        name = 'constraints-py313plus.txt'
+
+    path = base_dir / name
+    if not path.exists():
+        raise FileNotFoundError(f"No se encontró el archivo de constraints: {path}")
+
+    return path
+
+
 def main():
+    base_dir = Path(__file__).resolve().parent
+
     print("=" * 70)
     print("Verificación e instalación inteligente de dependencias")
     print("=" * 70)
     print(f"Python: {sys.executable}")
     print(f"Versión: {sys.version.split()[0]}")
+    constraints_file = select_constraints_file(base_dir)
+    print(f"Constraints: {constraints_file.name}")
     print()
     
-    requirements = read_requirements()
+    requirements = read_requirements(base_dir / 'requirements.txt')
     
     installed = []
     missing = []
@@ -72,6 +100,8 @@ def main():
                     'pip', 
                     'install', 
                     package,
+                    '-c',
+                    str(constraints_file),
                     '--quiet'
                 ])
                 print(f"  ✅ {package} instalado correctamente")

@@ -4,6 +4,7 @@ Verifica que todas las dependencias estén correctamente instaladas y funcionale
 """
 import sys
 from importlib.metadata import version, PackageNotFoundError
+import os
 
 
 def check_package(package_name, module_name=None):
@@ -39,20 +40,29 @@ def check_arcgis_connection():
     """Intenta conectarse a ArcGIS para verificar configuración."""
     try:
         from arcgis.gis import GIS
-        import os
         from dotenv import load_dotenv
         load_dotenv()
+
+        disable_pro = os.environ.get("ARCGIS_DISABLE_PRO", "false").lower() == "true"
+        runtime_mode = os.environ.get("ARCGIS_RUNTIME_MODE", "")
+        pro_version = os.environ.get("ARCGIS_PRO_VERSION", "")
         
         # Intentar conexión Pro
-        try:
-            print("   [INFO] Intentando conexión con ArcGIS Pro...", end="")
-            gis = GIS("Pro")
-            if gis is not None:
-                username = gis.users.me.username if gis.users.me else "usuario Pro"
-                print(" OK")
-                return True, "Pro", f"{username} - {gis.properties.get('name', 'N/A')}"
-        except Exception as e:
-            print(f" No disponible ({str(e)[:50]}...)")
+        if disable_pro:
+            detail = f"ArcGIS Pro {pro_version}" if pro_version else "ArcGIS Pro legado"
+            if runtime_mode:
+                detail += f" / runtime {runtime_mode}"
+            print(f"   [INFO] Modo Pro omitido por compatibilidad ({detail})")
+        else:
+            try:
+                print("   [INFO] Intentando conexión con ArcGIS Pro...", end="")
+                gis = GIS("Pro")
+                if gis is not None:
+                    username = gis.users.me.username if gis.users.me else "usuario Pro"
+                    print(" OK")
+                    return True, "Pro", f"{username} - {gis.properties.get('name', 'N/A')}"
+            except Exception as e:
+                print(f" No disponible ({str(e)[:50]}...)")
         
         # Verificar si OAuth2 está configurado
         use_oauth = os.environ.get("ARCGIS_USE_OAUTH", "false").lower() == "true"

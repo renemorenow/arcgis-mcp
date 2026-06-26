@@ -31,6 +31,11 @@ def main():
     print("Este script realizará:")
     print("  1. Instalación inteligente de dependencias")
     print("  2. Verificación post-instalación")
+    print()
+    print("IMPORTANTE:")
+    print("  setup.py asume que el interprete actual YA es compatible con MCP.")
+    print("  Si tienes ArcGIS Pro < 3.3, usa install.ps1 para que seleccione")
+    print("  automaticamente un Python externo 3.11+.")
     print("=" * 70)
     input("\nPresiona ENTER para continuar...")
     

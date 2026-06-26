@@ -25,6 +25,9 @@ ARCGIS_TOKEN = os.environ.get("ARCGIS_TOKEN")
 ARCGIS_CLIENT_ID = os.environ.get("ARCGIS_CLIENT_ID")  # Para OAuth2
 ARCGIS_USE_OAUTH = os.environ.get("ARCGIS_USE_OAUTH", "false").lower() == "true"
 WRITE_ENABLED = os.environ.get("ARCGIS_WRITE_ENABLED", "false").lower() == "true"
+DISABLE_PRO = os.environ.get("ARCGIS_DISABLE_PRO", "false").lower() == "true"
+RUNTIME_MODE = os.environ.get("ARCGIS_RUNTIME_MODE", "")
+ARCGIS_PRO_VERSION = os.environ.get("ARCGIS_PRO_VERSION", "")
 
 # Entra ID (Azure AD) — solo para modo SSE compartido con la organización
 # Registrar una App en Entra ID y volcar los valores aquí o en .env
@@ -61,15 +64,24 @@ def get_gis() -> GIS:
         return _gis
     
     # 1. Intentar conexión activa de ArcGIS Pro
-    try:
-        print("[INFO] Intentando conectar con sesión activa de ArcGIS Pro...", file=sys.stderr)
-        _gis = GIS("Pro")
-        if _gis is not None:
-            print(f"[OK] Conectado a ArcGIS Pro como: {_gis.users.me.username if _gis.users.me else 'usuario Pro'}", file=sys.stderr)
-            return _gis
-    except Exception as e:
-        print(f"[INFO] No hay sesión Pro activa o no se pudo conectar: {e}", file=sys.stderr)
-        pass
+    if DISABLE_PRO:
+        runtime_hint = f" (runtime: {RUNTIME_MODE})" if RUNTIME_MODE else ""
+        pro_hint = f" para ArcGIS Pro {ARCGIS_PRO_VERSION}" if ARCGIS_PRO_VERSION else ""
+        print(
+            "[INFO] Modo Pro deshabilitado por compatibilidad"
+            f"{pro_hint}{runtime_hint}. Se omitira GIS('Pro').",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            print("[INFO] Intentando conectar con sesión activa de ArcGIS Pro...", file=sys.stderr)
+            _gis = GIS("Pro")
+            if _gis is not None:
+                print(f"[OK] Conectado a ArcGIS Pro como: {_gis.users.me.username if _gis.users.me else 'usuario Pro'}", file=sys.stderr)
+                return _gis
+        except Exception as e:
+            print(f"[INFO] No hay sesión Pro activa o no se pudo conectar: {e}", file=sys.stderr)
+            pass
     
     # 2. OAuth2 interactivo (abre navegador para que el usuario se autentique)
     if ARCGIS_USE_OAUTH:
@@ -158,6 +170,11 @@ def connect_with_method(
     portal = url or ARCGIS_URL or "https://www.arcgis.com"
 
     if method == "pro":
+        if DISABLE_PRO:
+            raise ValueError(
+                "El modo 'pro' está deshabilitado en esta instalación porque ArcGIS Pro es inferior a 3.3 "
+                "o se forzó un runtime externo compatible con MCP. Usa oauth | apikey | profile | token | userpass."
+            )
         print("[INFO] Conectando con sesión activa de ArcGIS Pro...", file=sys.stderr)
         _gis = GIS("Pro")
 

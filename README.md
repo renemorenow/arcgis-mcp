@@ -17,9 +17,14 @@ Servidor MCP para **ArcGIS Online** y **ArcGIS Enterprise** que combina:
 
 1. **Descarga o clona** esta carpeta (`arcgis-mcp`)
 2. **Ejecuta el instalador** — clic derecho sobre `install.ps1` → *Ejecutar con PowerShell*  
-   Detecta Python automáticamente (ArcGIS Pro, sistema, Miniconda/Anaconda o lo instala vía `winget`). Instala dependencias y configura los IDEs instalados (VS Code, Claude Desktop, Cursor, Claude Code, Codex, OpenCode, OpenClaw).
+   Detecta Python automáticamente y aplica esta regla de compatibilidad:
+   - **ArcGIS Pro >= 3.3** → usa el Python del entorno de Pro con soporte pleno de `GIS("Pro")`
+   - **ArcGIS Pro < 3.3** → usa automáticamente un Python externo compatible con MCP
+   - **Sin ArcGIS Pro** → usa Python externo del sistema o lo instala vía `winget`
+   Luego instala dependencias y configura los IDEs detectados (VS Code, Claude Desktop, Cursor, Claude Code, Codex, OpenCode, OpenClaw).
 3. **Configurá la autenticación** y reiniciá el IDE:
-   - **Con ArcGIS Pro**: abrí Pro, conectate a tu portal — listo.
+   - **Con ArcGIS Pro 3.3+**: abrí Pro, conectate a tu portal — listo.
+   - **Con ArcGIS Pro < 3.3**: el instalador usará Python externo, así que configurá `.env` o usá otro método de autenticación distinto de `GIS("Pro")`.
    - **Sin ArcGIS Pro**: editá el `.env` con tu método preferido (OAuth2, API Key, perfil o usuario/contraseña). Ver sección [Autenticación](#autenticación).
 
 Proba con: *"¿con qué usuario estoy conectado?"*
@@ -34,10 +39,16 @@ Proba con: *"¿con qué usuario estoy conectado?"*
 El servidor intenta conectarse automáticamente en este orden:
 
 1. **🖥️ ArcGIS Pro activo** (`GIS("Pro")`) 
-   - Usa la sesión ya autenticada en ArcGIS Pro
-   - El usuario YA debe haber iniciado sesión en Pro
-   - No requiere .env si Pro está abierto y conectado
-   - **Ideal para**: Desarrollo local con Pro instalado
+    - Usa la sesión ya autenticada en ArcGIS Pro
+    - El usuario YA debe haber iniciado sesión en Pro
+    - No requiere .env si Pro está abierto y conectado
+    - **Disponible con soporte pleno desde ArcGIS Pro 3.3**
+    - **Ideal para**: Desarrollo local con Pro 3.3+ instalado
+
+> **Compatibilidad importante**
+> - **ArcGIS Pro >= 3.3**: el instalador usa el entorno Python de Pro y habilita `GIS("Pro")`.
+> - **ArcGIS Pro < 3.3**: el instalador usa automáticamente un Python externo compatible con MCP y deshabilita el modo `GIS("Pro")` por compatibilidad.
+> - En ese caso, usa OAuth2, API Key, perfil, token o usuario/contraseña.
 
 2. **🌐 OAuth2 interactivo** (Abre navegador)
    - Variables: `ARCGIS_USE_OAUTH=true`
@@ -73,6 +84,13 @@ python setup.py
 ```
 Este script ejecuta instalación inteligente + verificación automáticamente.
 
+> **Importante**
+> `setup.py`, `setup.ps1` e instalación manual con `pip` asumen que YA estás usando un runtime compatible:
+> - Python externo **3.11+**, o
+> - Python de **ArcGIS Pro 3.3+**.
+>
+> Si tienes **ArcGIS Pro < 3.3**, usa `install.ps1`, que selecciona automáticamente un Python externo compatible con MCP.
+
 ### Opción 2: Instalación manual
 ```bash
 # Solo instala paquetes faltantes (no reinstala los existentes)
@@ -82,6 +100,13 @@ python install_requirements.py
 python verify_installation.py
 ```
 
+`install_requirements.py` selecciona automáticamente un perfil de compatibilidad según la versión real de Python activa:
+- `constraints-py311.txt`
+- `constraints-py312.txt`
+- `constraints-py313plus.txt`
+
+Así evita resolver dependencias de forma ciega cuando el runtime cambia entre ArcGIS Pro 3.3+ y Python externos modernos.
+
 ### Opción 3: pip tradicional (Instala todos los paquetes requeridos)
 ```bash
 pip install -r requirements.txt
@@ -90,13 +115,15 @@ pip install -r requirements.txt
 ## ⚙️ Configuración
 
 ### 🖥️ Modo 1: ArcGIS Pro (Sin configuración)
-Si tienes ArcGIS Pro abierto y conectado, **no necesitas .env**. El servidor detectará automáticamente tu sesión activa.
+Si tienes **ArcGIS Pro 3.3 o superior** abierto y conectado, **no necesitas .env**. El servidor detectará automáticamente tu sesión activa.
 
 ```bash
 # 1. Abre ArcGIS Pro y conéctate a tu portal
 # 2. Ejecuta el servidor
 python arcgis_mcp.py
 ```
+
+Si tu instalación es **ArcGIS Pro < 3.3**, `install.ps1` configurará automáticamente un Python externo compatible con MCP. En esa modalidad debes usar `.env` o métodos de autenticación no-Pro.
 
 ### 🌐 Modo 2: OAuth2 Interactivo (Recomendado para producción)
 Crea un archivo `.env`:
