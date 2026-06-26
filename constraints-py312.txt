@@ -2,6 +2,7 @@
 # Used mainly for external runtimes selected by install.ps1.
 
 arcgis>=2.4,<2.5
+pyarrow>=16,<20
 fastmcp>=3.2,<4
 python-dotenv>=1.0,<2
 fastapi>=0.115,<1

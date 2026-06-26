@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from importlib.metadata import version, requires, PackageNotFoundError
 
+from packaging.requirements import Requirement
+
 
 CRITICAL_RUNTIME_IMPORTS = [
     ("arcgis", "arcgis"),
@@ -39,8 +41,8 @@ CRITICAL_PIP_TOKENS = {
 
 def is_package_installed(package_name):
     """Verifica si un paquete está instalado."""
-    # Normalizar nombre (quitar extras como [standard])
-    base_name = package_name.split('[')[0].strip()
+    # Normalizar nombre (quitar extras, especificadores y markers)
+    base_name = Requirement(package_name).name
     
     try:
         ver = version(base_name)
@@ -69,14 +71,57 @@ def import_module_check(module_name: str):
         return False, format_exception(exc)
 
 
-def arcgis_requires_pyarrow() -> bool:
-    """Detecta si la distribución arcgis declara pyarrow como dependencia."""
+def get_arcgis_pyarrow_requirement():
+    """Retorna el requirement activo de pyarrow declarado por arcgis, si aplica."""
     try:
         arcgis_requirements = requires('arcgis') or []
     except PackageNotFoundError:
-        return False
+        return None
 
-    return any('pyarrow' in requirement.lower() for requirement in arcgis_requirements)
+    for raw_requirement in arcgis_requirements:
+        requirement = Requirement(raw_requirement)
+        if requirement.name.lower() != 'pyarrow':
+            continue
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        return requirement
+
+    return None
+
+
+def build_requirement_install_target(requirement: Requirement) -> str:
+    """Convierte un Requirement a un target seguro para pip install."""
+    specifier = str(requirement.specifier)
+    if specifier:
+        return f"{requirement.name}{specifier}"
+    return requirement.name
+
+
+def ensure_arcgis_runtime_requirements(requirements):
+    """Agrega dependencias runtime implícitas requeridas por el arcgis instalado."""
+    normalized = {
+        Requirement(package).name.lower()
+        for package in requirements
+    }
+    runtime_requirements = list(requirements)
+
+    arcgis_pyarrow_requirement = get_arcgis_pyarrow_requirement()
+    if arcgis_pyarrow_requirement and 'pyarrow' not in normalized:
+        runtime_requirements.append('pyarrow')
+
+    return runtime_requirements, arcgis_pyarrow_requirement
+
+
+def requirement_is_satisfied(requirement: Requirement):
+    """Verifica si el paquete instalado satisface el requirement dado."""
+    is_installed, installed_version = is_package_installed(requirement.name)
+    if not is_installed:
+        return False, None
+
+    if not requirement.specifier:
+        return True, installed_version
+
+    return requirement.specifier.contains(installed_version, prereleases=True), installed_version
 
 
 def run_pip_check():
@@ -137,10 +182,14 @@ def run_post_install_health_check(requirements):
             )
 
     arcgis_installed, arcgis_version = is_package_installed('arcgis')
-    if arcgis_installed and arcgis_requires_pyarrow():
+    arcgis_pyarrow_requirement = get_arcgis_pyarrow_requirement()
+    if arcgis_installed and arcgis_pyarrow_requirement:
         ok, detail = import_module_check('pyarrow')
         if ok:
-            print(f"✅ import pyarrow (requerido por arcgis {arcgis_version})")
+            print(
+                f"✅ import pyarrow (requerido por arcgis {arcgis_version} "
+                f"{arcgis_pyarrow_requirement.specifier})"
+            )
         else:
             print(f"❌ import pyarrow -> {detail}")
             critical_failures.append(
@@ -222,15 +271,48 @@ def main():
     print()
     
     requirements = read_requirements(base_dir / 'requirements.txt')
+    requirements, arcgis_pyarrow_requirement = ensure_arcgis_runtime_requirements(requirements)
     
     installed = []
     missing = []
+    repairs = []
     
     # Verificar cada paquete
     print("Verificando paquetes...")
     print("-" * 70)
+
+    if arcgis_pyarrow_requirement:
+        print(
+            "ℹ️  arcgis instalado declara pyarrow como dependencia runtime "
+            f"({arcgis_pyarrow_requirement.specifier})"
+        )
     
     for package in requirements:
+        normalized_package = Requirement(package).name.lower()
+
+        if normalized_package == 'pyarrow' and arcgis_pyarrow_requirement:
+            is_satisfied, ver = requirement_is_satisfied(arcgis_pyarrow_requirement)
+
+            if is_satisfied:
+                installed.append((package, ver))
+                print(
+                    f"✅ {package:30} → Ya instalado (v{ver}, cumple "
+                    f"{arcgis_pyarrow_requirement.specifier})"
+                )
+            elif ver is None:
+                missing.append(build_requirement_install_target(arcgis_pyarrow_requirement))
+                print(
+                    f"❌ {package:30} → NO encontrado "
+                    f"(requerido por arcgis {arcgis_pyarrow_requirement.specifier})"
+                )
+            else:
+                repairs.append(build_requirement_install_target(arcgis_pyarrow_requirement))
+                print(
+                    f"⚠️  {package:30} → v{ver} incompatible; se ajustará a "
+                    f"{arcgis_pyarrow_requirement.specifier}"
+                )
+            continue
+
         is_installed, ver = is_package_installed(package)
         
         if is_installed:
@@ -244,14 +326,16 @@ def main():
     print(f"\nResumen:")
     print(f"  ✅ Ya instalados: {len(installed)}")
     print(f"  ❌ Faltantes:     {len(missing)}")
+    print(f"  🔧 A reparar:     {len(repairs)}")
     print()
     
-    # Instalar solo los faltantes
-    if missing:
-        print("Instalando paquetes faltantes...")
+    # Instalar solo los faltantes o reparaciones puntuales del runtime
+    install_targets = missing + repairs
+    if install_targets:
+        print("Instalando paquetes faltantes / reparando runtime...")
         print("-" * 70)
         
-        for package in missing:
+        for package in install_targets:
             print(f"\nInstalando: {package}")
             try:
                 subprocess.check_call([
@@ -270,7 +354,7 @@ def main():
                 return 1
         
         print("-" * 70)
-        print("\n✅ Todas las dependencias faltantes han sido instaladas.")
+        print("\n✅ Dependencias faltantes y ajustes puntuales del runtime aplicados.")
     else:
         print("✅ Todas las dependencias ya están instaladas. No hay nada que hacer.")
     

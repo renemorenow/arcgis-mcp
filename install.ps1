@@ -115,6 +115,89 @@ except Exception:
     }
 }
 
+function Get-ArcGISProRegistryInfo {
+    try {
+        return Get-ItemProperty -LiteralPath 'HKLM:\Software\ESRI\ArcGISPro' -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-ArcGISEnvPath {
+    param(
+        [string]$EnvValue,
+        $ProRegistryInfo
+    )
+
+    if (-not $EnvValue) { return $null }
+
+    $envValue = $EnvValue.Trim()
+    if (-not $envValue) { return $null }
+
+    $candidateDirs = @()
+
+    if ([System.IO.Path]::IsPathRooted($envValue)) {
+        $candidateDirs += $envValue
+    } else {
+        $candidateDirs += Join-Path $env:LOCALAPPDATA "ESRI\conda\envs\$envValue"
+        $candidateDirs += Join-Path $env:ProgramData  "ESRI\conda\envs\$envValue"
+
+        if ($ProRegistryInfo -and $ProRegistryInfo.PythonCondaRoot) {
+            $candidateDirs += Join-Path $ProRegistryInfo.PythonCondaRoot "envs\$envValue"
+        }
+
+        if ($ProRegistryInfo -and $ProRegistryInfo.InstallDir) {
+            $candidateDirs += Join-Path $ProRegistryInfo.InstallDir "bin\Python\envs\$envValue"
+        }
+    }
+
+    foreach ($dir in ($candidateDirs | Where-Object { $_ } | Select-Object -Unique)) {
+        $py = Join-Path $dir 'python.exe'
+        if (Test-Path $py) {
+            return $py
+        }
+    }
+
+    return $null
+}
+
+function Get-PreferredArcGISProPython {
+    $proReg = Get-ArcGISProRegistryInfo
+    if (-not $proReg) { return $null }
+
+    if ($proReg.InstallDir) {
+        $pythonEnvUtils = Join-Path $proReg.InstallDir 'bin\PythonEnvUtils.exe'
+        if (Test-Path $pythonEnvUtils) {
+            try {
+                $envPath = (& $pythonEnvUtils 2>$null | Select-Object -First 1)
+                $resolved = Resolve-ArcGISEnvPath -EnvValue "$envPath" -ProRegistryInfo $proReg
+                if ($resolved) {
+                    return [PSCustomObject]@{ PythonExe = $resolved; Source = 'PythonEnvUtils.exe' }
+                }
+            } catch {
+            }
+        }
+    }
+
+    try {
+        $hkcu = Get-ItemProperty -LiteralPath 'HKCU:\Software\ESRI\ArcGISPro' -Name PythonCondaEnv -ErrorAction Stop
+        $resolved = Resolve-ArcGISEnvPath -EnvValue $hkcu.PythonCondaEnv -ProRegistryInfo $proReg
+        if ($resolved) {
+            return [PSCustomObject]@{ PythonExe = $resolved; Source = 'HKCU:PythonCondaEnv' }
+        }
+    } catch {
+    }
+
+    if ($proReg.PythonCondaEnv) {
+        $resolved = Resolve-ArcGISEnvPath -EnvValue $proReg.PythonCondaEnv -ProRegistryInfo $proReg
+        if ($resolved) {
+            return [PSCustomObject]@{ PythonExe = $resolved; Source = 'HKLM:PythonCondaEnv' }
+        }
+    }
+
+    return $null
+}
+
 # Merge seguro de un MCP server en un JSON existente
 function Merge-McpJson {
     param(
@@ -267,6 +350,7 @@ $ARCGIS_PRO_VERSION = $null
 $PRO_SUPPORTS_INTEGRATED_RUNTIME = $false
 $DISABLE_PRO_MODE = $false
 $RUNTIME_MODE = "external"
+$PRO_PYTHON_SOURCE = $null
 $candidates     = [System.Collections.Generic.List[string]]::new()
 # — A) Buscar entornos conda de ArcGIS Pro —
 $esriLocal = Join-Path $env:LOCALAPPDATA "ESRI\conda\envs"
@@ -294,9 +378,19 @@ if (Test-Path $esriPF) {
 }
 
 # Preferir clone de ArcGIS Pro y decidir segun version
-$selectedProPython = $candidates | Where-Object { $_ -like "*clone*" } | Select-Object -First 1
-if (-not $selectedProPython) {
-    $selectedProPython = $candidates | Select-Object -First 1
+$preferredPro = Get-PreferredArcGISProPython
+
+if ($preferredPro) {
+    $selectedProPython = $preferredPro.PythonExe
+    $PRO_PYTHON_SOURCE = $preferredPro.Source
+} else {
+    $selectedProPython = $candidates | Where-Object { $_ -like "*clone*" } | Select-Object -First 1
+    if (-not $selectedProPython) {
+        $selectedProPython = $candidates | Select-Object -First 1
+    }
+    if ($selectedProPython) {
+        $PRO_PYTHON_SOURCE = 'filesystem-heuristic'
+    }
 }
 
 if ($selectedProPython) {
@@ -312,14 +406,23 @@ if ($selectedProPython) {
             $PYTHON_EXE = $selectedProPython
             $RUNTIME_MODE = "pro-integrated"
             Write-Ok "ArcGIS Pro $ARCGIS_PRO_VERSION detectado. Se usara su entorno Python: $PYTHON_EXE"
+            if ($PRO_PYTHON_SOURCE) {
+                Write-Host "  Fuente del entorno activo de Pro: $PRO_PYTHON_SOURCE" -ForegroundColor DarkGray
+            }
         } else {
             Write-Warn "ArcGIS Pro $ARCGIS_PRO_VERSION detectado. Las versiones inferiores a 3.3 usan Python externo compatible con MCP."
             Write-Host "  Se buscara o instalara Python 3.11+ fuera del entorno de Pro." -ForegroundColor Yellow
+            if ($PRO_PYTHON_SOURCE) {
+                Write-Host "  Fuente del entorno detectado: $PRO_PYTHON_SOURCE" -ForegroundColor DarkGray
+            }
         }
     } else {
         $DISABLE_PRO_MODE = $true
         Write-Warn "Se detecto un entorno de ArcGIS Pro pero no se pudo determinar su version."
         Write-Host "  Por seguridad se usara Python externo 3.11+ y se deshabilitara GIS('Pro')." -ForegroundColor Yellow
+        if ($PRO_PYTHON_SOURCE) {
+            Write-Host "  Fuente del entorno detectado: $PRO_PYTHON_SOURCE" -ForegroundColor DarkGray
+        }
     }
 }
 

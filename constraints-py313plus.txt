@@ -2,6 +2,7 @@
 # ArcGIS Pro 3.6+ ships with Python 3.13.
 
 arcgis>=2.4.2,<2.5
+pyarrow>=19,<20
 fastmcp>=3.2,<4
 python-dotenv>=1.0,<2
 fastapi>=0.115,<1
